@@ -1,0 +1,1841 @@
+---
+title: "Analysis_Chap_I"
+author: "Caio Graco-Roza"
+date: "16/06/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir =dirname(rstudioapi::getActiveDocumentContext()$path)) #Set the working directory 
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  dev = "svg",
+  dpi=600,
+  fig.align = 'center')
+
+library(pacman) #Use to load packages and install the ones you do not have.
+pacman::p_load("ggpubr","rstatix","ggiraphExtra", "jtools","interactions","FD","tidyverse","patchwork","reshape2","ggthemes","scales")
+
+
+```
+
+```{r loading}
+
+#Loading source files 
+
+source("./Functions/clump_test.R")
+
+
+#set colour pallete for the figures 
+
+Colour_pallete = c("#999999",
+                   "#E69F00",
+                   "#56B4E9",
+                   "#009E73",
+                   "#F0E442",
+                   "#0072B2",
+                   "#D55E00",
+                   "#CC79A7")
+
+
+input<-read.table("./Data/Data_analysis.csv", header=TRUE, sep=',',dec='.') #read input
+  abiotic<-read.csv('./Data/abiotic.csv')
+  spp<-read.csv('./Data/abundance.csv', sep=',',dec='.', row.names=1)
+  traits<-read.csv('./Data/functional traits.csv',sep=',',dec='.', row.names=1)
+  colnames(spp)<-rownames(traits) 
+
+#treat input file 
+mbfg<-input %>% filter(Category == "DS") %>% select(MBFG)
+
+input<- input %>% select(-Log2_Body_size) %>%  
+  mutate(Species_code = str_pad(Species_code, 3, pad='0'),
+                 MBFG = factor(MBFG),
+                 Category = factor(input$Category, levels=c('UC','MC','LC','DS','WS')),
+                 Biovolume = Biovolume/10e5,
+                  Clumps = factor(floor(log2(Volume))))
+
+```
+
+Exploring the abundance of the functional groups across seasons and river stretches.
+
+```{r MBFG abundance, fig.width=10, fig.height=5}
+mbfg_biovol <- t(aggregate(t(spp), by=mbfg, FUN=sum))
+mbfg_biovol2<-t(mbfg_biovol)
+
+mbfg_biovol2<-data.frame(mbfg_biovol)
+colnames(mbfg_biovol2) <- mbfg_biovol2[1,]; 
+mbfg_biovol2<-mbfg_biovol2[-1,]
+
+mbfg_abun<- data.frame(mbfg_biovol2 %>% rownames_to_column(var = "ID"),  abiotic[,c(2,3,6,7)]) %>%
+  mutate(MONTH = factor(MONTH), STATION = factor(STATION)) %>%
+  reshape2::melt(c('ID','MONTH','COURSE','PERIOD','STATION'), value.name ='Biovolume') %>%
+  mutate(Biovolume = as.numeric(.$Biovolume),
+         MONTH = factor(.$MONTH, levels=c('5','6','7','8','9','10','11','12','1','2','3','4')),
+         COURSE = factor(.$COURSE, levels=c('Upper','Medium','Lower'))) 
+
+
+Fig_1a <- mbfg_abun %>%
+  group_by(STATION, PERIOD, variable) %>% summarise(across("Biovolume", list(Mean =
+                                                                               mean, SD = sd))) %>%
+  ggplot(aes(STATION, Biovolume_Mean, fill = variable)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = percent_format()) +
+  facet_wrap(~ PERIOD) +
+  scale_colour_manual(values = Colour_pallete) +
+  scale_fill_manual(values = Colour_pallete) + ylab('Contribution to biovolume (%)') +
+  theme_base(base_family = "Helvetica") + labs(colour = 'MBFG', fill = 'MBFG') +
+  theme(rect = element_blank(), axis.title.y = element_blank()) + xlab('Sampling sites')
+
+Fig_1b <- mbfg_abun %>%
+  group_by(MONTH, COURSE, variable) %>% summarise(across("Biovolume", list(Mean =
+                                                                             mean, SD = sd))) %>%
+  ggplot(aes(MONTH, Biovolume_Mean, fill = variable)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = percent_format()) +
+  facet_wrap( ~ COURSE) +
+  scale_colour_manual(values = Colour_pallete) +
+  scale_fill_manual(values = Colour_pallete) + ylab('Contribution to biovolume (%)') +
+  theme_base(base_family = "Helvetica") + labs(colour = 'MBFG', fill = 'MBFG') +
+  theme(rect = element_blank()) + xlab('Sampling months') +
+  scale_x_discrete(
+    labels = c(
+      "May-12",
+      "Jun-12",
+      "Jul-12",
+      "Aug-12",
+      "Sep-12",
+      "Oct-12",
+      "Nov-12",
+      "Dec-12",
+      "Jan-13",
+      "Feb-13",
+      "Mar-13",
+      "Apr-13"
+    )
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+layout <- c(
+  area(1, 1,1,2),
+  area(1, 3),
+  area(2,1,2,3)
+)
+
+Fig_1<- (Fig_1a+plot_layout(guides='collect')) +
+  guide_area() +
+  Fig_1b +
+  plot_layout(design=layout)
+```
+
+```{r figure 1, fig.width=10, fig.height=5}
+
+
+Fig_1
+#ggsave(Fig_1, filename='Figures/PDF/Fig_mbfg.pdf', width=10, height=6,units='in', device =cairo_pdf())
+#ggsave(Fig_1, filename='Figures/TIF/Fig_mbfg.tiff', width=10, height=6, units='in',dpi=300, device=tiff())
+
+
+```
+
+# RLQ analysis
+
+```{r RLQ analysis, echo=FALSE, messages=FALSE, warnings=FALSE}
+#Prepare the tables
+  table.R<-abiotic[,-c(1:5)] %>% mutate_at(c('TP','DO','DIN','SRP','Turb','WD'),~ log10(.x +1)) %>%
+  mutate_at(vars(PERIOD,COURSE),factor)
+  table.L<- spp %>% mutate_all(~ log10(.x +1))
+  table.Q<- traits %>% mutate_at(vars(V,SV,MLD), log10)
+  
+   ord.L <- dudi.coa(table.L, scannf = FALSE)
+   ord.R <- dudi.hillsmith(table.R, scannf = FALSE, row.w = ord.L$lw)
+   ord.Q  <- dudi.hillsmith(table.Q, scannf = FALSE, row.w = ord.L$cw)
+   
+   rlq1 <- rlq(ord.R, ord.L, ord.Q, scannf = FALSE)
+
+   rlq_fourthc_combined<-fourthcorner.rlq(rlq1, nrepet=999, p.adjust.method.G = "fdr",p.adjust.method.D = "fdr")
+   r_fourthc_combined<-fourthcorner.rlq(rlq1, nrepet=999, p.adjust.method.G = "fdr",p.adjust.method.D = "fdr", type='R.axes')
+   q_fourthc_combined<-fourthcorner.rlq(rlq1, nrepet=999, p.adjust.method.G = "fdr",p.adjust.method.D = "fdr", type='Q.axes')
+
+mbfg<- input %>% filter(Category == 'DS') %>% select(MBFG)  #get species MBFG 
+gg <- data.frame(MBFG=mbfg, x=rlq1$mQ[,1], y=rlq1$mQ[,2]) # build ggplot dataframe with points (x,y) and corresponding 
+centroids <- aggregate(cbind(x,y)~MBFG,data=gg,mean)# calculate group centroid locations
+gg <- merge(gg,centroids,by="MBFG",suffixes=c("",".centroid"))# merge centroid locations into ggplot dataframe
+contr<- summary(rlq1)
+```
+
+# First RLQ panel : Environment vs traits ordination
+
+```{r Figure 2a, echo=FALSE, messages=FALSE, warnings=FALSE}
+scores.env<-rlq1$l1 %>%
+  rownames_to_column() %>% 
+  rename(Variables = rowname, x=RS1,y=RS2) %>%
+  mutate_at("Variables",
+              recode,
+            PERIO.Dry = "DS",
+            PERIO.Wet	= "WS",
+            COURS.Lower = "LC",
+            COURS.Medium = "MC",
+            COURS.Upper = "UC"
+            )
+scores.traits<- rlq1$c1 %>% 
+   rownames_to_column() %>% 
+    rename(Traits = rowname, x=CS1,y=CS2) %>%
+  mutate_at("Traits",
+            recode,
+            Flagella = "Fla",
+            Silice = "Si",
+            Mucilage = "Muc",
+            Aerotopes = "Aer"
+            )
+  
+limits<-bind_rows(scores.env,scores.traits)
+
+
+fig_a <- scores.env %>% ggplot(aes(x, y)) +
+  ggthemes::theme_base(base_family = "Helvetica", base_size = 16) +
+  geom_vline(aes(xintercept = 0), linetype = "dotted", size = .2) +
+  geom_hline(aes(yintercept = 0), linetype = "dotted", size = .2) +
+  geom_segment(
+    aes(
+      x = 0,
+      y = 0,
+      xend = x * .9,
+      yend = y * .9
+    ),
+    arrow = arrow(length = unit(1, "mm"), type = 'closed'),
+    colour = 'black',
+    size = .4,
+    alpha = .5
+  ) +
+  geom_text(
+    aes(x = x, y = y, label = Variables),
+    colour = 'black',
+    fontface = 'bold',
+    family = "Helvetica",
+    size = 6
+  ) +
+  geom_text(
+    data = scores.traits,
+    aes(x = x, y = y, label = Traits),
+    colour = 'black',
+    family = "Helvetica",
+    size = 6
+  ) +
+  xlab('RLQ-axis 1 (66.71%)') + ylab('RLQ-axis 2 (17.65%)') +
+  grids(linetype = "dashed", color = "gray90") +
+  scale_y_continuous(limits = c(min(limits$y), max(limits$y)),
+                     breaks = seq(floor(min(limits$y)), ceiling(max(limits$y)), .5)) +
+  scale_x_continuous(limits = c(min(limits$x) - .1, max(limits$x)),
+                     breaks = seq(floor(min(limits$x)), ceiling(max(limits$x)), .5)) +
+  theme(
+    legend.position = 'right',
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    rect = element_blank(),
+    panel.grid.minor =   element_blank()
+  ) +
+  annotate(
+    geom = "text",
+    -Inf,
+    Inf,
+    label = "d = 0.5",
+    vjust = 2,
+    hjust = -.3,
+    family = "Helvetica",
+    size = 8
+  )
+
+fig_a
+```
+
+# Second RLQ panel : Check if species from same MBFG are positioned close to each other
+
+```{r Figure 2b, echo=FALSE, messages=FALSE, warnings=FALSE}
+
+fig_b<- ggplot(gg) + 
+geom_vline(aes(xintercept=0),linetype=2)+
+geom_hline(aes(yintercept=0),linetype=2)+
+geom_segment(aes(x=x.centroid, y=y.centroid, xend=x, yend=y) , colour='black', alpha=.7)+
+geom_point(aes(x=x,y=y, fill=MBFG), size=3, shape=21) +
+xlab('RLQ-axis 1 (66.71%)')+ 
+ylab('RLQ-axis 2 (17.65%)') +
+labs(fill='MBFG')+
+ggthemes::theme_base(base_family = "Helvetica", base_size=16)+
+guides(fill=guide_legend(ncol=1, override.aes=list(size=3)))+
+scale_fill_manual(values=Colour_pallete[-2], drop=FALSE)+
+grids(linetype = "dashed",color="gray90")+
+scale_y_continuous(limits=c(min(gg$y),max(gg$y)),
+breaks=seq(floor(min(gg$y)),ceiling(max(gg$y)),.5))+
+scale_x_continuous(limits=c(min(gg$x),max(gg$x)),
+breaks=seq(floor(min(gg$x)),ceiling(max(gg$x)),.5))+
+theme(legend.position=c(.8,.2),
+axis.text.x=element_blank(),
+axis.ticks.x=element_blank(),
+axis.text.y=element_blank(),
+axis.ticks.y=element_blank(),
+rect=element_blank(),
+legend.text=element_text(size=14),
+legend.title=element_text(size=12),
+legend.title.align=0.5,
+panel.grid.minor = element_blank())+
+annotate(geom="text",-Inf,Inf,label="d = 0.5", vjust=2,hjust=-.3, family="Helvetica", size=8)
+
+fig_b
+```
+
+# Third RLQ panel: fourth-corner results for environment vs axes
+
+```{r RLQ combined Environment vs. trait syndroms, echo=FALSE, warnings=FALSE, messages=FALSE }
+
+table_r<-matrix(r_fourthc_combined$tabD2$obs,nrow = 13,ncol = 2) %>%
+ `rownames<-`(r_fourthc_combined$colnames.R) %>%
+  `colnames<-`(r_fourthc_combined$colnames.Q) %>%
+  melt() %>%
+ mutate(p_value = r_fourthc_combined$tabD2$adj.pvalue) %>%
+ rename(Environment = Var1, Trait_syndrom = Var2, Correlation = value ) %>%
+ mutate_at("p_value",  ~ factor(ifelse(. <= 0.05, "Yes","No"), levels=c("Yes","No"))) %>%
+ mutate_at("Correlation", round, 3) %>%
+  mutate_at("Environment",
+            recode,
+            PERIO.Dry = "DS",
+            PERIO.Wet	= "WS",
+            COURS.Lower = "LC",
+            COURS.Medium = "MC",
+            COURS.Upper = "UC"
+            )
+  
+  
+
+(fig_c<- table_r %>%
+  ggplot(aes(x=Trait_syndrom,y=Environment,fill=p_value),colour="black") +
+  geom_tile(colour="black", size=.5) +
+  geom_text(aes(label = round(Correlation/sqrt(ord.L$eig[1]),3), fontface=ifelse(p_value == "Yes",2,1)),family="Helvetica") +
+  scale_fill_manual(values=c('gray80',"white"))+
+  labs(fill='Significant')+
+  ylab('Environmental variables') +
+  xlab('Trait syndromes') +
+  ggthemes::theme_tufte(base_family="Helvetica", base_size=16)+
+  theme(rect=element_blank(), legend.position='none', axis.text=element_text(colour="black"))+
+  guides(fill = guide_legend(override.aes = list(colour = "black")))+
+  scale_x_discrete(labels=c(expression("RLQ axis 1"["Trait"]),expression("RLQ axis 2"["Trait"])), position="top"))
+
+
+
+  
+```
+
+\#Third RLQ panel: fourth-corner results for traits vs axes
+
+```{r RLQ combined Traits x Env. Gradient, echo=FALSE, warnings=FALSE, messages=FALSE }
+
+table_q<-matrix(q_fourthc_combined$tabD2$obs,nrow = 2,ncol = 7) %>%
+ `rownames<-`(q_fourthc_combined$colnames.R) %>%
+  `colnames<-`(q_fourthc_combined$colnames.Q) %>%
+  melt() %>%
+ mutate(p_value = q_fourthc_combined$tabD2$adj.pvalue) %>%
+ rename(Traits = Var2, Gradient = Var1, Correlation = value ) %>%
+ mutate_at("p_value",  ~ factor(ifelse(. <= 0.05, "Yes","No"), levels=c("Yes","No"))) %>%
+ mutate_at("Correlation", round, 3) %>%
+  mutate_at("Traits",
+            recode,
+            Flagella = "Fla",
+            Silice = "Si",
+            Mucilage = "Muc",
+            Aerotopes = "Aer"
+            )
+
+(fig_d<- table_q %>%
+  ggplot(aes(y=Traits,x=Gradient,fill=p_value)) +
+  scale_fill_manual(values=c('gray80',"white"))+
+  geom_tile(colour="black", size=.5) +
+  geom_text(aes(label = round(Correlation/sqrt(ord.L$eig[1]),3), fontface=ifelse(p_value == "Yes",2,1)), family="Helvetica") +
+  
+  labs(fill='Significant')+
+  ylab('Traits') +
+  xlab('Environmental gradient') +
+  ggthemes::theme_tufte(base_family="Helvetica", base_size=16)+
+  theme(rect=element_blank(), legend.position='none', axis.text = element_text(colour="black"))+
+  scale_x_discrete(labels=c(expression("RLQ axis 1"["Environment"]),
+                            expression("RLQ axis 2"["Environment"])),
+                   position="top"))
+  
+
+
+```
+
+# Figure 2
+
+```{r figure 2abcd, fig.caption="A) The relationships between species traits and environmental variables. B) The distribution of species in the functional space. Each point in the ordination plot represents the position of a species modelled according to its traits on RLQ axes 1 and 2. The black lines connect the species to the centroid of its morphology-based functional groups - MBFG. Colours represent MBFGs", fig.height=8, fig.width=14, message=FALSE, warning=FALSE}
+pan_1 <- {(fig_a | fig_b ) + plot_layout(guides="collect")} / (fig_c  | fig_d ) +
+  plot_annotation(tag_levels = "A") & theme(plot.tag = element_text(face="bold"))
+pan_1
+
+
+#ggsave(pan_1, filename ='Figures/PDF/Fig_2.png', height=8, width=14, units='in', device=cairo_pdf())
+
+```
+
+# Temporal Patterns
+
+```{r Dry season,  include=TRUE,fig.width=6,fig.height=3}
+Colour_pallete = c("#999999",
+                  # "#E69F00",
+                   "#56B4E9",
+                   "#009E73",
+                   "#F0E442",
+                   "#0072B2",
+                   "#D55E00",
+                   "#CC79A7")  
+
+data<- subset(input, Category == 'DS')
+
+data<- data %>%
+  group_by(Clumps) %>%
+  mutate(R.Biovolume = round((Biovolume  / sum(Biovolume))*100,2))
+
+  #Testing parameters ----
+
+  species_code= data$Species_code
+  body_size=data$Volume
+  abundance=data$Biovolume
+  posteriori=data[,2:8]
+  priori=data$MBFG
+  colour=Colour_pallete
+  
+test<- clump_test(body_size=body_size,abun = t(subset(spp, abiotic$PERIOD == "Dry"))/1e6, n.clumps=NULL, rand=1000, cex.axis=1.5,cex=1.5, give.results = TRUE, plot=FALSE)
+  
+attach(test)
+  clump_range<-as.data.frame(matrix(NA,nrow=length(which(significance == "*")), ncol=3))
+  colnames(clump_range) <- c('Clump','min','max')
+  for (i in 1:length(which(significance == "*"))){
+    
+    clump_range$Clump[i] <- paste0( clump[which(significance == "*")[i]])
+    clump_range$min[i]<- clump[which(significance == '*')[i]]  
+    clump_range$max[i]<- clump[which(significance == '*')[i]+1]
+    clump_range$code[i]<-paste0('S',clump_range$Clump[i]," (range: ",clump[which(significance == '*')[i]],' - ',clump[which(significance == '*')[i]+1],')')
+  }
+  detach(test)
+
+clumps_homogeneity<-betadisper(gowdis(data[,2:8]), data$Clumps, 'centroid',add=TRUE)
+ 
+gg<- data.frame(data, x=clumps_homogeneity$vectors[,1], y=clumps_homogeneity$vectors[,2], FDist= clumps_homogeneity$distances) 
+
+clump_separate<-list()
+for (i in 1:length(which(test$significance == '*'))) {
+clump_separate[[i]]<-gg[data$Clumps == levels(data$Clumps)[which(test$significance == '*')[i]],]
+}
+gg<-do.call(rbind, clump_separate)   
+
+centroids <- aggregate(cbind(x,y)~Clumps,data=gg,mean)
+gg<-merge(gg,centroids,by="Clumps",suffixes=c("",".centroid"))
+
+# Generate the table for the mixed-model approach ----
+Dry_lme<- data.frame(Fdist= gg$FDist,
+                     Clump= gg$Clumps,
+                     Abundance = gg$Biovolume,
+                     Category= gg$Category)
+
+
+legend_bubbles <- data.frame(
+  label = c("10", "40", "100"),
+  size  = c(10, 40, 100)
+) %>%
+mutate(radius = sqrt(size / pi))  
+
+panel_2 <- ggplot(gg) +
+  geom_hline(aes(yintercept = 0), linetype = 3) +
+  geom_vline(aes(xintercept = 0), linetype = 3) +
+  geom_segment(aes(
+    x = x.centroid,
+    y = y.centroid,
+    xend = x,
+    yend = y
+  )) +
+  geom_point(aes(
+    x = x,
+    y = y,
+    fill = MBFG,
+    size = R.Biovolume
+  ), shape = 21) +
+  geom_point(
+    data = centroids,
+    aes(x = x, y = y),
+    shape = 22,
+    fill = 'yellow',
+    size = 4
+  ) +
+  geom_label(data = centroids, aes(x = x, y = y), label = centroids$Clumps) +
+  xlab('Niche dimension 1') + ylab('Niche dimension 2') +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  labs(fill = 'MBFG') +
+  ylim(-.5, .5) +
+  xlim(-.5, .5) +
+  ggtitle("Species distribution in the \nfunctional space")+
+  ggthemes::theme_base(base_family = "Helvetica") +
+  scale_size_area(max_size = 20, guide = FALSE) +
+  theme(
+    legend.position = 'bottom',
+    legend.box = 'vertical',
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0,
+      margin = margin(0, 0, 0, 0)
+    )
+  ) +
+  guides(fill = guide_legend(nrow = 1,
+                             override.aes = list(size = 5))) +
+  geom_point(
+    data = legend_bubbles,
+    aes(
+      x = -.33 * 0.8, #No need for this multiplication, just dumb.
+      y = -.52 + radius / 65, # The "radius/x" was trial and error.
+      size = size
+    ),
+    
+    shape = 21,
+    color = "black",
+    fill = NA
+  ) +
+  geom_text(data = legend_bubbles,
+            size = 3,
+            aes(
+              x = -.33 * 0.8, #No need for this multiplication, just dumb.
+              y = -.50 + radius / 32, # The "radius/x" was trial and error.
+              label = label
+            ), family="Helvetica") +
+  annotate(
+    "text",
+    y = -.52 * .4, #position in y axis
+    x = -.33 * 0.8,#position in x axis
+    label = "Biovolume at \n the segment level (%) ", #text within the plot
+    lineheight=.8, #distance between lines after break
+    fontface = "plain", #type of face. It can be bold,plain, italic...
+    family="Helvetica", #font type, e.g. Helvetica, serif, mono
+    size = 4.5, 
+    hjust = .5 # left aligned =.5, center=0, right=1
+  )
+
+
+
+facet_labs <- clump_range$code
+names(facet_labs) <- clump_range$Clump
+
+
+panel_3 <- gg  %>%
+  arrange(desc(R.Biovolume)) %>%
+  group_by(Clumps) %>% slice(1:5) %>%
+  ggplot(aes(x = Species_code, y = Biovolume, fill = MBFG)) +
+  geom_bar(stat = 'identity',
+           width = .5,
+           colour = 'black') +
+  coord_flip() +
+  facet_wrap(
+    ~ Clumps,
+    scales = 'free_y',
+    ncol = 1,
+    labeller = labeller(Clumps = facet_labs)
+  ) +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  ggthemes::theme_base(base_family  = "Helvetica") +
+  ylab(expression("Mean biovolume (mm" ^ 3 * " L" ^ -1 * ")")) +
+  xlab('Species code') +
+  ylim(0, 0.05) +
+  ggtitle("Species biovolume \nwithin the size segment (S)") +
+  theme(
+    legend.position = 'none',
+    strip.background = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0
+    ),
+    strip.text = element_text(size = 12),
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8)
+  ) + labs(fill = 'MBFG') +
+  guides(color = guide_legend("MBFG"), fill = FALSE)
+
+Dry_fig<- {wrap_elements(panel = ~clump_test(body_size=body_size,
+                                               abun=t(subset(spp/10e5, abiotic$PERIOD == "Dry")),
+                                               n.clumps=NULL,
+                                               rand=1000,
+                                               cex.axis=1,
+                                               cex=1.3,
+                                               y.limits=c(0,0.05),
+                                               plot=TRUE), clip = FALSE)|
+  panel_2 |
+  panel_3 } + 
+  plot_layout(guides = 'collect')+
+  plot_layout(tag_level = 'new') & theme(legend.position="none")
+
+
+
+```
+
+```{r Wet Season,  warnings=FALSE,messages=FALSE, echo=FALSE}
+  data<- subset(input, Category == 'WS')
+
+  data<- data %>%
+  group_by(Clumps) %>%
+  mutate(R.Biovolume = round((Biovolume  / sum(Biovolume))*100,2))
+
+  #Testing parameters ----
+
+  species_code= data$Species_code
+  body_size=data$Volume
+  abundance=data$Biovolume
+  posteriori=data[,2:8]
+  priori=data$MBFG
+  colour=Colour_pallete
+  
+test<- clump_test(body_size=body_size,abun = t(subset(spp, abiotic$PERIOD == "Wet")), n.clumps=NULL, rand=1000, cex.axis=1.5,cex=1.5, give.results = TRUE, plot=FALSE)
+  
+attach(test)
+  clump_range<-as.data.frame(matrix(NA,nrow=length(which(significance == "*")), ncol=3))
+  colnames(clump_range) <- c('Clump','min','max')
+  for (i in 1:length(which(significance == "*"))){
+    
+    clump_range$Clump[i] <- paste0( clump[which(significance == "*")[i]])
+    clump_range$min[i]<- clump[which(significance == '*')[i]]  
+    clump_range$max[i]<- clump[which(significance == '*')[i]+1]
+    clump_range$code[i]<-paste0('S',clump_range$Clump[i]," (range: ",clump[which(significance == '*')[i]],' - ',clump[which(significance == '*')[i]+1],')')
+  }
+  detach(test)
+
+clumps_homogeneity<-betadisper(gowdis(data[,2:8]), data$Clumps, 'centroid',add=TRUE)
+ 
+gg<- data.frame(data, x=clumps_homogeneity$vectors[,1], y=clumps_homogeneity$vectors[,2], FDist= clumps_homogeneity$distances) 
+
+clump_separate<-list()
+for (i in 1:length(which(test$significance == '*'))) {
+clump_separate[[i]]<-gg[data$Clumps == levels(data$Clumps)[which(test$significance == '*')[i]],]
+}
+gg<-do.call(rbind, clump_separate)   
+
+centroids <- aggregate(cbind(x,y)~Clumps,data=gg,mean)
+gg<-merge(gg,centroids,by="Clumps",suffixes=c("",".centroid"))
+
+# Generate the table for the mixed-model approach ----
+Wet_lme<- data.frame(Fdist= gg$FDist,
+                     Clump= gg$Clumps,
+                     Abundance = gg$Biovolume,
+                     Category= gg$Category)
+
+
+legend_bubbles <- data.frame(
+  label = c("10", "40", "100"),
+  size  = c(10, 40, 100)
+) %>%
+mutate(radius = sqrt(size / pi))  
+
+panel_5 <- ggplot(gg) +
+  geom_hline(aes(yintercept = 0), linetype = 3) +
+  geom_vline(aes(xintercept = 0), linetype = 3) +
+  geom_segment(aes(
+    x = x.centroid,
+    y = y.centroid,
+    xend = x,
+    yend = y
+  )) +
+  geom_point(aes(
+    x = x,
+    y = y,
+    fill = MBFG,
+    size = R.Biovolume
+  ), shape = 21) +
+  geom_point(
+    data = centroids,
+    aes(x = x, y = y),
+    shape = 22,
+    fill = 'yellow',
+    size = 4
+  ) +
+  geom_label(data = centroids, aes(x = x, y = y), label = centroids$Clumps) +
+  xlab('Niche dimension 1') + ylab('Niche dimension 2') +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  labs(fill = 'MBFG') +
+  ylim(-.5, .5) +
+  xlim(-.5, .5) +
+  ggtitle("Species distribution in the \nfunctional space")+
+  ggthemes::theme_base(base_family = "Helvetica") +
+  scale_size_area(max_size = 20, guide = FALSE) +
+  theme(
+    legend.position = 'bottom',
+    legend.box = 'vertical',
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0,
+      margin = margin(0, 0, 0, 0)
+    )
+  ) +
+  guides(fill = guide_legend(nrow = 1,
+                             override.aes = list(size = 5))) +
+  geom_point(
+    data = legend_bubbles,
+    aes(
+      x = -.33 * 0.8, #No need for this multiplication, just dumb.
+      y = -.52 + radius / 65, # The "radius/x" was trial and error.
+      size = size
+    ),
+    
+    shape = 21,
+    color = "black",
+    fill = NA
+  ) +
+  geom_text(data = legend_bubbles,
+            size = 3,
+            aes(
+              x = -.33 * 0.8, #No need for this multiplication, just dumb.
+              y = -.50 + radius / 32, # The "radius/x" was trial and error.
+              label = label
+            ), family="Helvetica") +
+  annotate(
+    "text",
+    y = -.52 * .4, #position in y axis
+    x = -.33 * 0.8,#position in x axis
+    label = "Biovolume at \n the segment level (%) ", #text within the plot
+    lineheight=.8, #distance between lines after break
+    fontface = "plain", #type of face. It can be bold,plain, italic...
+    family="Helvetica", #font type, e.g. Helvetica, serif, mono
+    size = 4.5, 
+    hjust = .5 # left aligned =.5, center=0, right=1
+  )
+
+
+
+facet_labs <- clump_range$code
+names(facet_labs) <- clump_range$Clump
+
+
+panel_6 <- gg  %>%
+  arrange(desc(R.Biovolume)) %>%
+  group_by(Clumps) %>% slice(1:5) %>%
+  ggplot(aes(x = Species_code, y = Biovolume, fill = MBFG)) +
+  geom_bar(stat = 'identity',
+           width = .5,
+           colour = 'black') +
+  coord_flip() +
+  facet_wrap(
+    ~ Clumps,
+    scales = 'free_y',
+    ncol = 1,
+    labeller = labeller(Clumps = facet_labs)
+  ) +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  ggthemes::theme_base(base_family  = "Helvetica") +
+  ylab(expression("Mean biovolume (mm" ^ 3 * " L" ^ -1 * ")")) +
+  xlab('Species code') +
+  ylim(0, 0.05) +
+  ggtitle("Species biovolume \nwithin the size segment (S)") +
+  theme(
+    legend.position = 'none',
+    strip.background = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0
+    ),
+    strip.text = element_text(size = 12),
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8)
+  ) + labs(fill = 'MBFG') +
+  guides(color = guide_legend("MBFG"), fill = FALSE)
+
+Wet_fig<- {wrap_elements(panel = ~clump_test(body_size=body_size,
+                                               abun=t(subset(spp/10e5,
+                                                             abiotic$PERIOD == "Wet")),
+                                               n.clumps=NULL,
+                                               rand=1000,
+                                               cex.axis=1,
+                                               cex=1.3,
+                                               y.limits=c(0,0.05),
+                                               plot=TRUE), clip = FALSE)|
+  panel_5|
+  panel_6 }+ 
+  plot_layout(guides ='collect')+
+  plot_layout(tag_level = 'new') & theme(legend.position="bottom")
+
+
+
+
+```
+
+# Figure 3
+
+```{r Figure 3B, fig.height=12, fig.width=14, echo=FALSE}
+Figure_3 <- Dry_fig/ 
+Wet_fig +
+  plot_annotation(tag_levels = c("A","1")) &
+   theme(plot.tag = element_text(size = 15, face = "bold"))
+Figure_3
+```
+
+# Spatial pattern
+
+```{r Upper course, warnings=FALSE,messages=FALSE, echo=FALSE}
+  data<- subset(input, Category == 'UC')
+
+ 
+  data<- data %>%
+  group_by(Clumps) %>%
+  mutate(R.Biovolume = round((Biovolume  / sum(Biovolume))*100,2))
+
+  #Testing parameters ----
+
+  species_code= data$Species_code
+  body_size=data$Volume
+  abundance=data$Biovolume
+  posteriori=data[,2:8]
+  priori=data$MBFG
+  colour=Colour_pallete
+  
+test<- clump_test(body_size=body_size,abun = t(subset(spp, abiotic$COURSE == "Upper")), n.clumps=NULL, rand=1000, cex.axis=1.5,cex=1.5, give.results = TRUE, plot=FALSE)
+  
+attach(test)
+  clump_range<-as.data.frame(matrix(NA,nrow=length(which(significance == "*")), ncol=3))
+  colnames(clump_range) <- c('Clump','min','max')
+  for (i in 1:length(which(significance == "*"))){
+    
+    clump_range$Clump[i] <- paste0( clump[which(significance == "*")[i]])
+    clump_range$min[i]<- clump[which(significance == '*')[i]]  
+    clump_range$max[i]<- clump[which(significance == '*')[i]+1]
+    clump_range$code[i]<-paste0('S',clump_range$Clump[i]," (range: ",clump[which(significance == '*')[i]],' - ',clump[which(significance == '*')[i]+1],')')
+  }
+  detach(test)
+
+clumps_homogeneity<-betadisper(gowdis(data[,2:8]), data$Clumps, 'centroid',add=TRUE)
+ 
+gg<- data.frame(data, x=clumps_homogeneity$vectors[,1], y=clumps_homogeneity$vectors[,2], FDist= clumps_homogeneity$distances) 
+
+clump_separate<-list()
+for (i in 1:length(which(test$significance == '*'))) {
+clump_separate[[i]]<-gg[data$Clumps == levels(data$Clumps)[which(test$significance == '*')[i]],]
+}
+gg<-do.call(rbind, clump_separate)   
+
+centroids <- aggregate(cbind(x,y)~Clumps,data=gg,mean)
+gg<-merge(gg,centroids,by="Clumps",suffixes=c("",".centroid"))
+
+# Generate the table for the mixed-model approach ----
+Upper_lme<- data.frame(Fdist= gg$FDist,
+                     Clump= gg$Clumps,
+                     Abundance = gg$Biovolume,
+                     Category= gg$Category)
+
+
+legend_bubbles <- data.frame(
+  label = c("10", "40", "100"),
+  size  = c(10, 40, 100)
+) %>%
+mutate(radius = sqrt(size / pi))  
+
+panel_8 <- ggplot(gg) +
+  geom_hline(aes(yintercept = 0), linetype = 3) +
+  geom_vline(aes(xintercept = 0), linetype = 3) +
+  geom_segment(aes(
+    x = x.centroid,
+    y = y.centroid,
+    xend = x,
+    yend = y
+  )) +
+  geom_point(aes(
+    x = x,
+    y = y,
+    fill = MBFG,
+    size = R.Biovolume
+  ), shape = 21) +
+  geom_point(
+    data = centroids,
+    aes(x = x, y = y),
+    shape = 22,
+    fill = 'yellow',
+    size = 4
+  ) +
+  geom_label(data = centroids, aes(x = x, y = y), label = centroids$Clumps) +
+  xlab('Niche dimension 1') + ylab('Niche dimension 2') +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  labs(fill = 'MBFG') +
+  ylim(-.5, .5) +
+  xlim(-.5, .5) +
+  ggtitle("Species distribution in the \nfunctional space")+
+  ggthemes::theme_base(base_family = "Helvetica") +
+  scale_size_area(max_size = 20, guide = FALSE) +
+  theme(
+    legend.position = 'bottom',
+    legend.box = 'vertical',
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0,
+      margin = margin(0, 0, 0, 0)
+    )
+  ) +
+  guides(fill = guide_legend(nrow = 1,
+                             override.aes = list(size = 5))) +
+  geom_point(
+    data = legend_bubbles,
+    aes(
+      x = -.33 * 0.8, #No need for this multiplication, just dumb.
+      y = -.53 + radius / 46, # The "radius/x" was trial and error.
+      size = size
+    ),
+    
+    shape = 21,
+    color = "black",
+    fill = NA
+  ) +
+  geom_text(data = legend_bubbles,
+            size = 3,
+            aes(
+              x = -.33 * 0.8, #No need for this multiplication, just dumb.
+              y = -.51 + radius / 22, # The "radius/x" was trial and error.
+              label = label
+            ), family="Helvetica") +
+  annotate(
+    "text",
+    y = -.53 * .3, #position in y axis
+    x = -.33 * 0.8,#position in x axis
+    label = "Biovolume at \n the segment level (%) ", #text within the plot
+    lineheight=.8, #distance between lines after break
+    fontface = "plain", #type of face. It can be bold,plain, italic...
+    family="Helvetica", #font type, e.g. Helvetica, serif, mono
+    size = 4.5, 
+    hjust = .5 # left aligned =.5, center=0, right=1
+  )
+
+
+
+
+facet_labs <- clump_range$code
+names(facet_labs) <- clump_range$Clump
+
+
+panel_9 <- gg  %>%
+  arrange(desc(R.Biovolume)) %>%
+  group_by(Clumps) %>% slice(1:5) %>%
+  ggplot(aes(x = Species_code, y = Biovolume, fill = MBFG)) +
+  geom_bar(stat = 'identity',
+           width = .5,
+           colour = 'black') +
+  coord_flip() +
+  facet_wrap(
+    ~ Clumps,
+    scales = 'free_y',
+    ncol = 1,
+    labeller = labeller(Clumps = facet_labs)
+  ) +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  ggthemes::theme_base(base_family  = "Helvetica") +
+  ylab(expression("Mean biovolume (mm" ^ 3 * " L" ^ -1 * ")")) +
+  xlab('Species code') +
+  ylim(0, 0.05) +
+  ggtitle("Species biovolume \nwithin the size segment (S)") +
+  theme(
+    legend.position = 'none',
+    strip.background = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0
+    ),
+    strip.text = element_text(size = 12),
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8)
+  ) + labs(fill = 'MBFG') +
+  guides(color = guide_legend("MBFG"), fill = FALSE)
+
+
+Upper_fig<- {wrap_elements(panel = ~clump_test(body_size=body_size,
+                                               abun= t(subset(spp/10e5, abiotic$COURSE == "Upper")),
+                                               n.clumps=NULL,
+                                               rand=1000,
+                                               cex.axis=1,
+                                               cex=1.3,
+                                               y.limits=c(0,0.05),
+                                               plot=TRUE), clip = FALSE)|
+  panel_8 |
+  panel_9} + 
+  plot_layout(guides = 'collect') +
+  plot_layout(tag_level = "new") &
+  theme(legend.position="none")
+
+
+```
+
+```{r Medium course, warnings=FALSE,messages=FALSE, echo=FALSE}
+  data<- subset(input, Category == 'MC')
+  data<- data %>%
+  group_by(Clumps) %>%
+  mutate(R.Biovolume = round((Biovolume  / sum(Biovolume))*100,2))
+
+  #Testing parameters ----
+
+  species_code= data$Species_code
+  body_size=data$Volume
+  abundance=data$Biovolume
+  posteriori=data[,2:8]
+  priori=data$MBFG
+  colour=Colour_pallete
+  
+test<- clump_test(body_size=body_size,abun = t(subset(spp, abiotic$COURSE == "Medium")), n.clumps=NULL, rand=1000, cex.axis=1.5,cex=1.5, give.results = TRUE, plot=FALSE)
+  
+attach(test)
+  clump_range<-as.data.frame(matrix(NA,nrow=length(which(significance == "*")), ncol=3))
+  colnames(clump_range) <- c('Clump','min','max')
+  for (i in 1:length(which(significance == "*"))){
+    
+    clump_range$Clump[i] <- paste0( clump[which(significance == "*")[i]])
+    clump_range$min[i]<- clump[which(significance == '*')[i]]  
+    clump_range$max[i]<- clump[which(significance == '*')[i]+1]
+    clump_range$code[i]<-paste0('S',clump_range$Clump[i]," (range: ",clump[which(significance == '*')[i]],' - ',clump[which(significance == '*')[i]+1],')')
+  }
+  detach(test)
+
+clumps_homogeneity<-betadisper(gowdis(data[,2:8]), data$Clumps, 'centroid',add=TRUE)
+ 
+gg<- data.frame(data, x=clumps_homogeneity$vectors[,1], y=clumps_homogeneity$vectors[,2], FDist= clumps_homogeneity$distances) 
+
+clump_separate<-list()
+for (i in 1:length(which(test$significance == '*'))) {
+clump_separate[[i]]<-gg[data$Clumps == levels(data$Clumps)[which(test$significance == '*')[i]],]
+}
+gg<-do.call(rbind, clump_separate)   
+
+centroids <- aggregate(cbind(x,y)~Clumps,data=gg,mean)
+gg<-merge(gg,centroids,by="Clumps",suffixes=c("",".centroid"))
+
+# Generate the table for the mixed-model approach ----
+Medium_lme<- data.frame(Fdist = gg$FDist,
+                     Clump = gg$Clumps,
+                     Abundance = gg$Biovolume,
+                     Category = gg$Category)
+
+legend_bubbles <- data.frame(
+  label = c("10", "40", "100"),
+  size  = c(10, 40, 100)
+) %>%
+mutate(radius = sqrt(size / pi))  
+
+panel_11 <- ggplot(gg) +
+  geom_hline(aes(yintercept = 0), linetype = 3) +
+  geom_vline(aes(xintercept = 0), linetype = 3) +
+  geom_segment(aes(
+    x = x.centroid,
+    y = y.centroid,
+    xend = x,
+    yend = y
+  )) +
+  geom_point(aes(
+    x = x,
+    y = y,
+    fill = MBFG,
+    size = R.Biovolume
+  ), shape = 21) +
+  geom_point(
+    data = centroids,
+    aes(x = x, y = y),
+    shape = 22,
+    fill = 'yellow',
+    size = 4
+  ) +
+  geom_label(data = centroids, aes(x = x, y = y), label = centroids$Clumps) +
+  xlab('Niche dimension 1') + ylab('Niche dimension 2') +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  labs(fill = 'MBFG') +
+  ylim(-.5, .5) +
+  xlim(-.5, .5) +
+  ggtitle("Species distribution in the \nfunctional space")+
+  ggthemes::theme_base(base_family = "Helvetica") +
+  scale_size_area(max_size = 20, guide = FALSE) +
+  theme(
+    legend.position = 'bottom',
+    legend.box = 'vertical',
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0,
+      margin = margin(0, 0, 0, 0)
+    )
+  ) +
+  guides(fill = guide_legend(nrow = 1,
+                             override.aes = list(size = 5))) +
+  geom_point(
+    data = legend_bubbles,
+    aes(
+      x = -.33 * 0.8, #No need for this multiplication, just dumb.
+      y = -.53 + radius / 46, # The "radius/x" was trial and error.
+      size = size
+    ),
+    
+    shape = 21,
+    color = "black",
+    fill = NA
+  ) +
+  geom_text(data = legend_bubbles,
+            size = 3,
+            aes(
+              x = -.33 * 0.8, #No need for this multiplication, just dumb.
+              y = -.51 + radius / 22, # The "radius/x" was trial and error.
+              label = label
+            ), family="Helvetica") +
+  annotate(
+    "text",
+    y = -.53 * .3, #position in y axis
+    x = -.33 * 0.8,#position in x axis
+    label = "Biovolume at \n the segment level (%) ", #text within the plot
+    lineheight=.8, #distance between lines after break
+    fontface = "plain", #type of face. It can be bold,plain, italic...
+    family="Helvetica", #font type, e.g. Helvetica, serif, mono
+    size = 4.5, 
+    hjust = .5 # left aligned =.5, center=0, right=1
+  )
+
+
+
+
+facet_labs <- clump_range$code
+names(facet_labs) <- clump_range$Clump
+
+
+panel_12 <- gg  %>%
+  arrange(desc(R.Biovolume)) %>%
+  group_by(Clumps) %>% slice(1:5) %>%
+  ggplot(aes(x = Species_code, y = Biovolume, fill = MBFG)) +
+  geom_bar(stat = 'identity',
+           width = .5,
+           colour = 'black') +
+  coord_flip() +
+  facet_wrap(
+    ~ Clumps,
+    scales = 'free_y',
+    ncol = 1,
+    labeller = labeller(Clumps = facet_labs)
+  ) +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  ggthemes::theme_base(base_family  = "Helvetica") +
+  ylab(expression("Mean biovolume (mm" ^ 3 * " L" ^ -1 * ")")) +
+  xlab('Species code') +
+  ylim(0, 0.05) +
+  ggtitle("Species biovolume \nwithin the size segment (S)") +
+  theme(
+    legend.position = 'none',
+    strip.background = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0
+    ),
+    strip.text = element_text(size = 12),
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8)
+  ) + labs(fill = 'MBFG') +
+  guides(color = guide_legend("MBFG"), fill = FALSE)
+
+
+
+Medium_fig<- {wrap_elements(panel = ~clump_test(body_size=body_size,
+                                               abun= t(subset(spp/10e5, abiotic$COURSE == "Medium")),
+                                               n.clumps=NULL,
+                                               rand=1000,
+                                               cex.axis=1,
+                                               cex=1.3,
+                                               y.limits = c(0,0.052),
+                                               plot=TRUE), clip = FALSE)|
+  panel_11 |
+  panel_12} + 
+  plot_layout(guides = 'collect') +
+  plot_layout(tag_level = "new") &
+  theme(legend.position="none")
+
+
+
+```
+
+```{r Lower Course,warnings=FALSE,messages=FALSE, echo=FALSE}
+   data<- subset(input, Category == 'LC')
+
+   data<- data %>%
+  group_by(Clumps) %>%
+  mutate(R.Biovolume = round((Biovolume  / sum(Biovolume))*100,2))
+
+  #Testing parameters ----
+
+  species_code= data$Species_code
+  body_size=data$Volume
+  abundance=data$Biovolume
+  posteriori=data[,2:8]
+  priori=data$MBFG
+  colour=Colour_pallete
+  
+test<- clump_test(body_size=body_size,abun = t(subset(spp, abiotic$COURSE == "Lower")), n.clumps=NULL, rand=1000, cex.axis=1.5,cex=1.5, give.results = TRUE, plot=FALSE)
+  
+attach(test)
+  clump_range<-as.data.frame(matrix(NA,nrow=length(which(significance == "*")), ncol=3))
+  colnames(clump_range) <- c('Clump','min','max')
+  for (i in 1:length(which(significance == "*"))){
+    
+    clump_range$Clump[i] <- paste0( clump[which(significance == "*")[i]])
+    clump_range$min[i]<- clump[which(significance == '*')[i]]  
+    clump_range$max[i]<- clump[which(significance == '*')[i]+1]
+    clump_range$code[i]<-paste0('S',clump_range$Clump[i]," (range: ",clump[which(significance == '*')[i]],' - ',clump[which(significance == '*')[i]+1],')')
+  }
+  detach(test)
+
+clumps_homogeneity<-betadisper(gowdis(data[,2:8]), data$Clumps, 'centroid',add=TRUE)
+ 
+gg<- data.frame(data, x=clumps_homogeneity$vectors[,1], y=clumps_homogeneity$vectors[,2], FDist= clumps_homogeneity$distances) 
+
+clump_separate<-list()
+for (i in 1:length(which(test$significance == '*'))) {
+clump_separate[[i]]<-gg[data$Clumps == levels(data$Clumps)[which(test$significance == '*')[i]],]
+}
+gg<-do.call(rbind, clump_separate)   
+
+centroids <- aggregate(cbind(x,y)~Clumps,data=gg,mean)
+gg<-merge(gg,centroids,by="Clumps",suffixes=c("",".centroid"))
+
+# Generate the table for the mixed-model approach ----
+Lower_lme<- data.frame(Fdist= gg$FDist,
+                     Clump= gg$Clumps,
+                     Abundance = gg$Biovolume,
+                     Category= gg$Category)
+
+
+legend_bubbles <- data.frame(
+  label = c("10", "40", "100"),
+  size  = c(10, 40, 100)
+) %>%
+mutate(radius = sqrt(size / pi))  
+
+panel_14 <- ggplot(gg) +
+  geom_hline(aes(yintercept = 0), linetype = 3) +
+  geom_vline(aes(xintercept = 0), linetype = 3) +
+  geom_segment(aes(
+    x = x.centroid,
+    y = y.centroid,
+    xend = x,
+    yend = y
+  )) +
+  geom_point(aes(
+    x = x,
+    y = y,
+    fill = MBFG,
+    size = R.Biovolume
+  ), shape = 21) +
+  geom_point(
+    data = centroids,
+    aes(x = x, y = y),
+    shape = 22,
+    fill = 'yellow',
+    size = 4
+  ) +
+  geom_label(data = centroids, aes(x = x, y = y), label = centroids$Clumps) +
+  xlab('Niche dimension 1') + ylab('Niche dimension 2') +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  labs(fill = 'MBFG') +
+  ylim(-.5, .5) +
+  xlim(-.5, .5) +
+  ggtitle("Species distribution in the \nfunctional space")+
+  ggthemes::theme_base(base_family = "Helvetica") +
+  scale_size_area(max_size = 20, guide = FALSE) +
+  theme(
+    legend.position = 'bottom',
+    legend.box = 'vertical',
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0,
+      margin = margin(0, 0, 0, 0)
+    )
+  ) +
+  guides(fill = guide_legend(nrow = 1,
+                             override.aes = list(size = 5))) +
+  geom_point(
+    data = legend_bubbles,
+    aes(
+      x = -.33 * 0.8, #No need for this multiplication, just dumb.
+      y = -.53 + radius / 46, # The "radius/x" was trial and error.
+      size = size
+    ),
+    
+    shape = 21,
+    color = "black",
+    fill = NA
+  ) +
+  geom_text(data = legend_bubbles,
+            size = 3,
+            aes(
+              x = -.33 * 0.8, #No need for this multiplication, just dumb.
+              y = -.51 + radius / 22, # The "radius/x" was trial and error.
+              label = label
+            ), family="Helvetica") +
+  annotate(
+    "text",
+    y = -.53 * .3, #position in y axis
+    x = -.33 * 0.8,#position in x axis
+    label = "Biovolume at \n the segment level (%) ", #text within the plot
+    lineheight=.8, #distance between lines after break
+    fontface = "plain", #type of face. It can be bold,plain, italic...
+    family="Helvetica", #font type, e.g. Helvetica, serif, mono
+    size = 4.5, 
+    hjust = .5 # left aligned =.5, center=0, right=1
+  )
+
+
+
+facet_labs <- clump_range$code
+names(facet_labs) <- clump_range$Clump
+
+
+panel_15 <- gg  %>%
+  arrange(desc(R.Biovolume)) %>%
+  group_by(Clumps) %>% slice(1:5) %>%
+  ggplot(aes(x = Species_code, y = Biovolume, fill = MBFG)) +
+  geom_bar(stat = 'identity',
+           width = .5,
+           colour = 'black') +
+  coord_flip() +
+  facet_wrap(
+    ~ Clumps,
+    scales = 'free_y',
+    ncol = 1,
+    labeller = labeller(Clumps = facet_labs)
+  ) +
+  scale_fill_manual(values = Colour_pallete, drop = FALSE) +
+  ggthemes::theme_base(base_family  = "Helvetica") +
+  ylab(expression("Mean biovolume (mm" ^ 3 * " L" ^ -1 * ")")) +
+  xlab('Species code') +
+  ylim(0, 0.05) +
+  ggtitle("Species biovolume \nwithin the size segment (S)") +
+  theme(
+    legend.position = 'none',
+    strip.background = element_blank(),
+    plot.title = element_text(
+      family = "Helvetica",
+      size = 14,
+      hjust = 0
+    ),
+    strip.text = element_text(size = 12),
+    rect = element_blank(),
+    panel.border = element_rect(fill=NA,colour="black",size=.8)
+  ) + labs(fill = 'MBFG') +
+  guides(color = guide_legend("MBFG"), fill = FALSE)
+
+Lower_fig<- {wrap_elements(panel = ~clump_test(body_size=body_size,
+                                               abun= t(subset(spp/10e5, abiotic$COURSE == "Lower")),
+                                               n.clumps=NULL,
+                                               rand=1000,
+                                               cex.axis=1,
+                                               cex=1.3,
+                                               y.limits=c(0,0.05),
+                                               plot=TRUE), clip = FALSE)|
+  panel_14 |
+  panel_15} + 
+  plot_layout(guides = 'collect') +
+  plot_layout(tag_level = "new") &
+  theme(legend.position="bottom")
+
+
+
+```
+
+# Figure 4
+
+```{r Figure 4C, fig.height=14.4, fig.width=14, echo=FALSE}
+Figure_4 <- Upper_fig /
+  Medium_fig /
+  Lower_fig +
+  plot_annotation(tag_levels = c("A", "1")) &
+  theme(plot.tag = element_text(size = 15, face = "bold"))
+Figure_4
+```
+
+# Testing H1
+
+## Seasons
+
+```{r Testing H1}
+# Overall mean Biomass - Dry Season ----
+diff_biov_DS_ov <- input %>% 
+  filter(Category == 'DS', Biovolume != 0 ) %>%
+  mutate_at('Biovolume', log10) %>%
+  #mutate(R.Biovolume = Biovolume/max(Biovolume)) %>%
+  select(c('Species_code','Biovolume')) %>% 
+  column_to_rownames(var='Species_code') %>% 
+  dist()
+
+diff_spp_DS_ov<- input %>% 
+  filter(Category == 'DS', Biovolume != 0 ) %>% 
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+(mrm_ov_DS <- mantel(diff_biov_DS_ov,diff_spp_DS_ov))
+# Mantel statistic r: 0.2544 
+#       Significance: 0.001
+
+```
+
+```{r }
+# Clump I 
+
+diff_biov_DS_C1<-input %>% 
+  filter(Clumps == '9', Category == 'DS', Biovolume != 0 ) %>% 
+  mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist(method = 'euclidean')
+
+diff_spp_DS_C1<- input %>% 
+  filter(Clumps == '9', Category == 'DS', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+mrm_C1_DS <- mantel(diff_biov_DS_C1,diff_spp_DS_C1)
+```
+
+```{r }
+# Clump II 
+
+diff_biov_DS_C2<-input %>% 
+  filter(Clumps == '14', Category == 'DS', Biovolume != 0 ) %>% 
+ mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist(method = 'euclidean')
+
+diff_spp_DS_C2<- input %>% 
+  filter(Clumps == '14', Category == 'DS', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+mrm_C2_DS <- mantel(diff_biov_DS_C2,diff_spp_DS_C2)
+
+# 
+# Mantel statistic r: -0.1449 
+#       Significance: 0.70833
+```
+
+```{r }
+# Overall mean Biomass - wet Season ----
+
+diff_biov_WS_ov <- input %>% 
+  filter(Category == 'WS', Biovolume != 0 ) %>%
+   mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>% 
+  column_to_rownames(var='Species_code') %>% 
+  dist(method = 'euclidean')
+
+diff_spp_WS_ov<- input %>% 
+  filter(Category == 'WS', Biovolume != 0 ) %>% 
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+(mrm_ov_WS <- mantel(diff_biov_WS_ov, diff_spp_WS_ov))
+
+# Mantel statistic r: 0.2952 
+# Significance: 0.001
+```
+
+```{r }
+# Clump I 
+
+diff_biov_WS_C1<-input %>% 
+  filter(Clumps == '9', Category == 'WS', Biovolume != 0 ) %>% 
+  mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist(method = 'euclidean')
+
+diff_spp_WS_C1<- input %>% 
+  filter(Clumps == '9', Category == 'WS', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+    mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+(mrm_C1_WS <- mantel(diff_biov_WS_C1,diff_spp_WS_C1))
+
+# Mantel statistic r: 0.06827 
+# Significance: 0.246
+```
+
+```{r }
+# Clump II 
+
+diff_biov_WS_C2<-input %>% 
+  filter(Clumps == '13'| Clumps == '14', Category == 'WS', Biovolume != 0 ) %>% 
+  mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist(method = 'euclidean')
+
+diff_spp_WS_C2<- input %>% 
+  filter(Clumps == '13'| Clumps == '14', Category == 'WS', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+(mrm_C2_WS <- mantel(diff_biov_WS_C2,diff_spp_WS_C2))
+```
+
+## River stretches
+
+```{r}
+# Overall mean Biomass - Upper course ----
+
+diff_biov_UC_ov <- input %>% 
+  filter(Category == 'UC', Biovolume != 0 ) %>%
+  mutate_at('Biovolume', log10) %>%
+  select(c('Species_code','Biovolume')) %>% 
+  column_to_rownames(var='Species_code') %>% 
+  dist(method = 'euclidean')
+
+diff_spp_UC_ov<- input %>% 
+  filter(Category == 'UC', Biovolume != 0 ) %>% 
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+ 
+
+(mrm_ov_UC <- mantel(diff_biov_UC_ov, diff_spp_UC_ov))
+
+# Mantel statistic r: 0.1708 
+# Significance: 0.001
+
+
+```
+
+```{r }
+# Clump I 
+
+diff_biov_UC_C1<-input %>% 
+  filter(Clumps == '9', Category == 'UC', Biovolume != 0 ) %>% 
+  #mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist(method = 'euclidean')
+
+diff_spp_UC_C1<- input %>% 
+  filter(Clumps == '9', Category == 'UC', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+
+(mrm_C1_UC <- mantel(diff_biov_UC_C1,diff_spp_UC_C1))
+
+# Mantel statistic r: 0.2328 
+# Significance: 0.026
+```
+
+```{r }
+# Overall mean Biomass - Medium course ----
+diff_biov_MC_ov <- input %>% 
+  filter(Category == 'MC', Biovolume != 0 ) %>%
+  mutate_at('Biovolume', log10) %>%
+  select(c('Species_code','Biovolume')) %>% 
+  column_to_rownames(var='Species_code') %>% 
+  dist(method = 'euclidean')
+
+diff_spp_MC_ov<- input %>% 
+  filter(Category == 'MC', Biovolume != 0 ) %>% 
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+
+(mrm_ov_MC <- mantel(diff_biov_MC_ov, diff_spp_MC_ov))
+
+
+# Mantel statistic r: 0.2128 
+#       Significance: 0.001
+```
+
+```{r }
+# Clump I 
+
+diff_biov_MC_C1<-input %>% 
+  filter(Clumps == '9', Category == 'MC', Biovolume != 0) %>% 
+  mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist(method = 'euclidean')
+
+diff_spp_MC_C1<- input %>% 
+  filter(Clumps == '9', Category == 'MC', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+(mrm_C1_MC <- mantel(diff_biov_MC_C1,diff_spp_MC_C1))
+
+# Mantel statistic r: 0.06141 
+# Significance: 0.245
+```
+
+```{r}
+# Clump II 
+
+diff_biov_MC_C2<-input %>% 
+  filter(Clumps == '14', Category == 'MC', Biovolume != 0 ) %>% 
+  mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist()
+
+diff_spp_MC_C2<- input %>% 
+  filter(Clumps == '14', Category == 'MC', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+
+(mrm_C2_MC <- mantel(diff_biov_MC_C2,diff_spp_MC_C2))
+
+# Mantel statistic r: -0.1668 
+# Significance: 0.65
+```
+
+```{r}
+# Overall mean Biomass - Lower course ----
+diff_biov_LC_ov <- input %>% 
+  filter(Category == 'LC', Biovolume != 0 ) %>%
+ mutate_at('Biovolume', log10) %>%
+  select(c('Species_code','Biovolume')) %>% 
+  column_to_rownames(var='Species_code') %>% 
+  dist()
+
+diff_spp_LC_ov<- input %>% 
+  filter(Category == 'LC', Biovolume != 0 ) %>% 
+  #select(c('Species_code','Volume','SV','MLD','Flagella','Silice','Mucilage','Aerotopes')) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+(mrm_ov_LC <-mantel(diff_biov_LC_ov,diff_spp_LC_ov))
+
+# Mantel statistic r: 0.339 
+#       Significance: 0.001
+```
+
+
+```{r}
+# Clump II
+
+diff_biov_LC_C2<-input %>% 
+  filter(Clumps == '14', Category == 'LC', Biovolume != 0) %>% 
+  mutate_at('Biovolume',log10) %>%
+  select(c('Species_code','Biovolume')) %>%
+  column_to_rownames(var='Species_code') %>%
+  dist()
+
+diff_spp_LC_C2<- input %>% 
+  filter(Clumps == '14', Category == 'LC', Biovolume != 0 ) %>%
+  select(Species_code,Volume,SV,MLD,Silice,Flagella) %>%
+  mutate_at("Volume", log10) %>%
+  column_to_rownames(var='Species_code') %>%
+  gowdis()
+
+
+(mrm_C2_LC <- mantel(diff_biov_LC_C2,diff_spp_LC_C2))
+
+```
+
+### Make table with results
+
+```{r, echo=FALSE}
+require(tidyverse)
+require(gt)
+tribble(~groups,        ~ category ,   ~variable, ~"Clump I", ~"Clump II", ~"Overall", 
+"Seasonal patterns",    "Dry season", "Mantel r", -0.14,.13,.25,
+#"Seasonal patterns",    "Dry season", "Species richness", 22,4,135,
+"Seasonal patterns",    "Dry season", "p-value", .71,.09,.01,
+"Seasonal patterns",    "Wet Season", "Mantel r",-.16,.06,.29,
+#"Seasonal patterns",    "Wet Season", "Species richness",11,20,123,
+"Seasonal patterns",    "Wet Season", "p-value",.69,.24,.01,
+"Spatial patterns",    "Upper course", "Mantel r", .23,NA,.17,
+#"Spatial patterns",    "Upper course", "Species richness", 17,NA,100,
+"Spatial patterns",    "Upper course", "p-value", .02,NA,.01,
+"Spatial patterns",    "Medium course", "Mantel r",-.16,.06,.21,
+#"Spatial patterns",    "Medium course", "Species richness",5,23,135,
+"Spatial patterns",    "Medium course", "p-value",.65,.22,.01,
+"Spatial patterns",    "Lower course", "Mantel r",NA, -.23,.33,
+#"Spatial patterns",    "Lower course", "Species richness",NA,5,122,
+"Spatial patterns",    "Lower course", "p-value", NA,.75,.01) %>% 
+  pivot_longer(cols=c("Clump I","Clump II","Overall"), names_to="Grouping") %>% pivot_wider(names_from="variable",values_from="value") %>%
+  gt(groupname_col = c("groups","category")) %>%
+    tab_header(
+title = "Pairwise differences in abundance ~ Functional similarity"
+  ) %>%
+   fmt_missing(everything()) %>%
+    tab_options(
+    data_row.padding = px(2),
+     table.font.size = px(8),
+        table.width = px(500),
+    row_group.background.color = "#ffffcc",
+    column_labels.background.color ="#85C1E9",
+    heading.background.color ="#85C1E9",
+    stub.border.style = "dashed") %>% 
+  tab_style(
+    style = list(
+      cell_fill(color = "#5499C7"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      rows = `p-value` <= 0.05
+    ))
+  
+```
+
+# Testing Hypothesis 2
+
+```{r, fig.width=6, fig.height=4.5}
+#Seasons
+
+Dry_H2<-input %>% 
+  filter(Clumps == '9'| Clumps == '14',
+         Category == 'DS') %>%
+  mutate(Group = case_when(Clumps == '9' ~'Clump I',
+                       Clumps == '14' ~'Clump II')) %>%
+  mutate(FDist = betadisper(gowdis(.[,-c(1)]), .$Group, 'centroid', add=TRUE)$distances)  %>%
+  mutate_at("Group", factor) %>%
+  filter(Biovolume != 0) %>%
+  dplyr::select(Biovolume, Group, FDist, Category, MBFG) %>%
+  arrange(Group) %>%
+  group_by(Group) %>% 
+  mutate(FDist.rel = FDist/max(FDist))
+
+Wet_H2<-input %>% 
+  filter(Clumps == '9'| Clumps == '13'| Clumps == '14',
+         Category == 'WS') %>%
+  mutate(Group = case_when(Clumps == '9' ~'Clump I',
+                     Clumps == '13'| Clumps == '14' ~'Clump II')) %>%
+  mutate(FDist = betadisper(gowdis(.[,-c(1)]), .$Group, 'centroid', add=TRUE)$distances)  %>%
+  mutate_at("Group", factor) %>%
+  filter(Biovolume != 0) %>%
+  dplyr::select(Biovolume, Group, FDist, Category, MBFG) %>%
+  arrange(Group) %>%
+  group_by(Group) %>% 
+  mutate(FDist.rel = FDist/max(FDist))
+
+Season_H2 <- bind_rows(Dry_H2,Wet_H2) %>%
+mutate(Category = recode(Category, DS='Dry Season', WS='Wet Season')) %>%
+  mutate_at('Biovolume', log10)  
+
+
+m1a<-lm(Biovolume~FDist.rel*Group, data=Season_H2 %>% filter(Category == 'Dry Season'))
+m1b<-lm(Biovolume~FDist.rel*Group, data=Season_H2 %>% filter(Category =='Wet Season'))
+```
+
+```{r , fig.width=6, fig.height=4.5}
+ 
+#River stretches 
+UC_H2<-input %>% 
+  filter(Clumps == '9',
+         Category == 'UC') %>%
+  mutate(Group = case_when(Clumps == '9' ~'Clump I')) %>%
+  mutate(FDist = betadisper(gowdis(.[,-c(1)]), .$Group, 'centroid', add=TRUE)$distances)%>%
+  mutate_at("Group", factor) %>%
+  filter(Biovolume != 0) %>%
+  dplyr::select(Biovolume, Group, FDist, Category) %>%
+  arrange(Group) %>%
+  group_by(Group) %>% 
+  mutate(FDist.rel = FDist/max(FDist))
+
+MC_H2<-input %>% 
+  filter(Clumps == '9'| Clumps == '14',
+         Category == 'MC') %>%
+  mutate(Group = case_when(Clumps == '9' ~'Clump I',
+                     Clumps == '14' ~'Clump II')) %>%
+  mutate(FDist = betadisper(gowdis(.[,-c(1)]), .$Group, 'centroid', add=TRUE)$distances) %>%
+  mutate_at("Group", factor) %>%
+  filter(Biovolume != 0) %>%
+  dplyr::select(Biovolume, Group, FDist, Category, MBFG) %>%
+  arrange(Group) %>%
+  group_by(Group) %>% 
+  mutate(FDist.rel = FDist/max(FDist))
+
+LC_H2<-input %>% 
+  filter(Clumps == '9'| Clumps == '14',
+         Category == 'LC') %>%
+  mutate(Group = case_when(Clumps == '9' ~'Clump I',
+                       Clumps == '14' ~'Clump II')) %>%
+  mutate(FDist = betadisper(gowdis(.[,-c(1)]), .$Group, 'centroid', add=TRUE)$distances) %>%
+    mutate_at("Group", factor) %>%
+  filter(Biovolume != 0) %>%
+  dplyr::select(Biovolume, Group, FDist, Category, MBFG) %>%
+  arrange(Group) %>%
+  group_by(Group) %>% 
+  mutate(FDist.rel = FDist/max(FDist))
+
+
+Stretches_H2 <- bind_rows(UC_H2,MC_H2,LC_H2) %>%
+mutate(Category = recode(Category, UC='Upper course', MC='Medium course', LC = 'Lower course')) %>% mutate_at('Biovolume', log10) 
+
+m2a<-lm(Biovolume~FDist.rel, data=Stretches_H2  %>% filter(Category == 'Upper course'))  
+m2b<-lm(Biovolume~FDist.rel*Group, data=Stretches_H2  %>% filter(Category == 'Medium course')) 
+m2c<-lm(Biovolume~FDist.rel*Group, data=Stretches_H2  %>% filter(Category == 'Lower course')) 
+
+stargazer::stargazer(m1a,m1b,m2a,m2b,m2c, type='text', column.labels = c('Dry season','Wet season','Upper course','Medium course','Lower course'), out='models_results_H2.html', report=('vc*p'))
+```
